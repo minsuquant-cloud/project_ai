@@ -1,0 +1,115 @@
+Date/Open/High/Low/Close/Volume   순서
+
+Date,Open,High,Low,Close,Volume
+2021-06-17,81100,81300,80700,80900,14007385
+2021-06-18,81100,81100,80500,80500,14916721
+
+
+# 1. 설치
+pip install -r requirements.txt
+
+# 2. 멀티에셋 수집 (본인 담당)
+python main.py --step collect
+
+# 3. 팀원 CSV → data/raw/stocks/ 에 넣기
+
+# 4. 전체 파이프라인 실행
+python main.py --mode balanced
+
+weinstein_portfolio/
+│
+├── main.py                       ← 전체 파이프라인 진입점
+│
+├── data/
+│   ├── raw/stocks/               ← 팀원이 주는 주식 CSV 여기에
+│   ├── raw/assets/               ← 본인 수집 ETF/BTC/금/원유 CSV
+│   ├── processed/                ← 결과물 저장
+│   └── collect_assets.py         ← yfinance 자동 수집 (본인 담당)
+│
+├── technical/
+│   └── indicators.py             ← MA30, ADX, ATR, RS, 모멘텀 계산
+│
+├── filter/
+│   ├── stage_filter.py           ← Stage 1~4 판별
+│   └── stage2_entry.py           ← Stage 2 진입 조건 세부 체크
+│
+├── portfolio/
+│   ├── scorer.py                 ← Trend Score / Risk Score 계산
+│   └── allocator.py              ← 공격/균형/보수 비중 결정
+│
+├── backtest/
+│   ├── backtester.py             ← 백테스트 실행
+│   └── optimize_params.py        ← 파라미터 최적화 (월 1회)
+│
+├── report/
+│   └── generator.py              ← 리포트 출력 + CSV 저장
+│
+├── utils/
+│   ├── loader.py                 ← 데이터 로딩 + 주봉 변환
+│   └── logger.py                 ← 로깅
+│
+└── params/
+    └── stage2_params.json        ← 최적화된 파라미터 저장
+
+
+기술적 지표 
+
+1. MA30 (30주 이동평균선)
+        역할: Weinstein Stage 판별의 핵심 기준선
+
+        d["MA30"] = d["close"].rolling(30).mean()
+
+2. MA30_slope (MA 기울기)
+       역할: MA가 올라가고 있는지 내려가고 있는지 판별
+
+       d["MA30_slope"] = d["MA30"] - d["MA30"].shift(4)
+
+3. ADX14 (Average Directional Index)
+       역할: 추세의 강도 측정 — 횡보 필터
+       Wilder ADX 계산 3단계로 구현되어 있습니다.
+
+       1단계: True Range
+             TR = max(High-Low, |High-PrevClose|, |Low-PrevClose|)
+       2단계: DM+ / DM- (방향성 지표)
+             DM+ = High - PrevHigh  (상승 움직임)
+             DM- = PrevLow - Low    (하락 움직임)
+       3단계: DI → DX → ADX (Wilder 스무딩)
+             DI+ = 100 × DM+ / TR (14주 평균)
+             DI- = 100 × DM- / TR (14주 평균)
+             DX  = 100 × |DI+ - DI-| / (DI+ + DI-)
+             ADX = DX의 14주 Wilder 평균
+
+4. volume_ratio (거래량 비율)
+        역할: 돌파의 신뢰도 확인
+
+        d["vol_avg"]   = d["volume"].rolling(20).mean()
+        d["vol_ratio"] = d["volume"] / d["vol_avg"]
+
+5. high_52w / hi52_pct (52주 최고가)
+        역할: 신고가 돌파 여부 확인
+
+        d["high_52w"] = d["high"].rolling(52).max()
+        d["hi52_pct"] = (d["close"] - d["high_52w"]) / d["high_52w"]
+
+6. ATR14 / ATR_ratio (평균 진폭)
+        역할: 자산별 변동성 측정 → 비중 결정에 사용
+
+        TR  = max(High-Low, |High-PrevClose|, |Low-PrevClose|)
+        ATR = TR의 14주 단순 평균
+
+        d["ATR_ratio"] = d["ATR14"] / d["close"]   # 가격 대비 변동성
+
+7. momentum_12 (12주 모멘텀)
+        역할: 추세 지속성 확인
+
+        d["momentum_12"] = d["close"] / d["close"].shift(12) - 1
+
+8. RS (상대강도)
+        역할: 전체 자산 중 이 자산이 얼마나 강한지 순위
+
+        # 12주 수익률로 전체 자산 순위 매기기
+        ret_12w = close_now / close_12w_ago - 1
+
+        # 순위를 0~1로 정규화
+        RS = 순위 / 전체 자산 수
+
